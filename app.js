@@ -1,7 +1,38 @@
 // app.js - generate Alight Motion compatible XML from traced SVG paths
 // Requires:
 //  - ImageTracer loaded (already in index.html)
-//  - svgpath loaded (CDN added in index.html) for reliable path translation
+//  - svgpath optionally loaded (CDN added in index.html) for reliable path translation
+
+// Helper: ensure svgpath library is loaded before using it
+function ensureSvgpathLoaded(callback) {
+  if (typeof svgpath !== 'undefined') {
+    callback();
+    return;
+  }
+  const scriptId = 'svgpath-cdn-dynamic';
+  if (document.getElementById(scriptId)) {
+    // If script requested, wait until svgpath becomes available
+    const waitFor = setInterval(() => {
+      if (typeof svgpath !== 'undefined') {
+        clearInterval(waitFor);
+        callback();
+      }
+    }, 50);
+    // safety timeout 5s
+    setTimeout(() => clearInterval(waitFor), 5000);
+    return;
+  }
+  const s = document.createElement('script');
+  s.id = scriptId;
+  s.src = 'https://unpkg.com/svgpath@2.6.0/svgpath.min.js';
+  s.async = true;
+  s.onload = () => callback();
+  s.onerror = () => {
+    console.warn('Gagal memuat svgpath dari CDN; path translation akan dilewati.');
+    callback(); // proceed without translasi
+  };
+  document.head.appendChild(s);
+}
 
 document.getElementById('convertBtn').addEventListener('click', () => {
   const convertBtn = document.getElementById('convertBtn');
@@ -68,48 +99,59 @@ document.getElementById('convertBtn').addEventListener('click', () => {
       }, TRACE_TIMEOUT_MS);
 
       try {
-        // Use data URL to ImageTracer
-        ImageTracer.imageToSVG(img.src, function (svgString) {
-          if (timedOut) return;
-          clearTimeout(traceTimer);
-
-          if (!svgString || svgString.indexOf('<svg') === -1) {
-            showMessage('Hasil tracing kosong atau tidak valid.', 'error');
-            convertBtn.disabled = false;
-            convertBtn.textContent = originalText;
-            hideLoader();
-            return;
-          }
-
+        // Ensure svgpath loaded, then run ImageTracer
+        ensureSvgpathLoaded(() => {
           try {
-            const parser = new DOMParser();
-            const svgDoc = parser.parseFromString(svgString, 'image/svg+xml');
-            const pathElements = svgDoc.querySelectorAll('path');
+            ImageTracer.imageToSVG(img.src, function (svgString) {
+              if (timedOut) return;
+              clearTimeout(traceTimer);
 
-            if (!pathElements || pathElements.length === 0) {
-              showMessage('Tracing berhasil, tapi tidak ada path vektor yang ditemukan.', 'error');
-              convertBtn.disabled = false;
-              convertBtn.textContent = originalText;
-              hideLoader();
-              return;
-            }
+              if (!svgString || svgString.indexOf('<svg') === -1) {
+                showMessage('Hasil tracing kosong atau tidak valid.', 'error');
+                convertBtn.disabled = false;
+                convertBtn.textContent = originalText;
+                hideLoader();
+                return;
+              }
 
-            const xmlContent = generateAlightMotionXML(pathElements);
-            downloadXML('vector_shape_am.xml', xmlContent);
-            showMessage('Selesai: file XML diunduh.', 'success');
-          } catch (innerErr) {
-            console.error('Error saat memproses SVG:', innerErr);
-            showMessage('Terjadi kesalahan saat memproses SVG. Lihat console.', 'error');
-          } finally {
+              try {
+                const parser = new DOMParser();
+                const svgDoc = parser.parseFromString(svgString, 'image/svg+xml');
+                const pathElements = svgDoc.querySelectorAll('path');
+
+                if (!pathElements || pathElements.length === 0) {
+                  showMessage('Tracing berhasil, tapi tidak ada path vektor yang ditemukan.', 'error');
+                  convertBtn.disabled = false;
+                  convertBtn.textContent = originalText;
+                  hideLoader();
+                  return;
+                }
+
+                const xmlContent = generateAlightMotionXML(pathElements);
+                downloadXML('vector_shape_am.xml', xmlContent);
+                showMessage('Selesai: file XML diunduh.', 'success');
+              } catch (innerErr) {
+                console.error('Error saat memproses SVG:', innerErr);
+                showMessage('Terjadi kesalahan saat memproses SVG. Lihat console.', 'error');
+              } finally {
+                convertBtn.disabled = false;
+                convertBtn.textContent = originalText;
+                hideLoader();
+              }
+            }, { lprs: 1, qtres: 1, numberofcolors: 4 });
+          } catch (err) {
+            clearTimeout(traceTimer);
+            console.error('ImageTracer gagal dipanggil:', err);
+            showMessage('Terjadi kesalahan saat memulai proses tracing.', 'error');
             convertBtn.disabled = false;
             convertBtn.textContent = originalText;
             hideLoader();
           }
-        }, { lprs: 1, qtres: 1, numberofcolors: 4 });
-      } catch (err) {
+        }); // ensureSvgpathLoaded
+      } catch (outerErr) {
         clearTimeout(traceTimer);
-        console.error('ImageTracer gagal dipanggil:', err);
-        showMessage('Terjadi kesalahan saat memulai proses tracing.', 'error');
+        console.error('Kesalahan tak terduga:', outerErr);
+        showMessage('Terjadi kesalahan tak terduga.', 'error');
         convertBtn.disabled = false;
         convertBtn.textContent = originalText;
         hideLoader();
