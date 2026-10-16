@@ -1,10 +1,8 @@
-// Updated app.js — produce Alight Motion compatible XML structure
-// This file traces an image to SVG paths (ImageTracer), then outputs an XML
-// formatted to match the structure Alight Motion exports so its "Upload XML"
-// can accept it. It attempts to mirror required tags/attributes (scene, shape,
-// transform/location, fillColor, path) and header metadata.
+// app.js - generate Alight Motion compatible XML from traced SVG paths
+// Requires:
+//  - ImageTracer loaded (already in index.html)
+//  - svgpath loaded (CDN added in index.html) for reliable path translation
 
-// Main click handler
 document.getElementById('convertBtn').addEventListener('click', () => {
   const convertBtn = document.getElementById('convertBtn');
   const fileInput = document.getElementById('imageInput');
@@ -29,12 +27,10 @@ document.getElementById('convertBtn').addEventListener('click', () => {
       messageEl.style.color = '#002244';
     }
   }
-
   function clearMessage() {
     messageEl.textContent = '';
     messageEl.style.display = 'none';
   }
-
   function showLoader() { loader.style.display = 'flex'; }
   function hideLoader() { loader.style.display = 'none'; }
 
@@ -57,23 +53,22 @@ document.getElementById('convertBtn').addEventListener('click', () => {
 
   reader.onload = function (e) {
     const imgDataUrl = e.target.result;
-
     const img = document.getElementById('imagePreview');
     img.src = imgDataUrl;
 
     const TRACE_TIMEOUT_MS = 30000;
-
     img.onload = () => {
       let timedOut = false;
       const traceTimer = setTimeout(() => {
         timedOut = true;
-        showMessage('Proses terlalu lama — kemungkinan gambar terlalu besar atau library gagal memprosesnya.', 'error');
+        showMessage('Proses tracing terlalu lama — kemungkinan gambar terlalu besar.', 'error');
         convertBtn.disabled = false;
         convertBtn.textContent = originalText;
         hideLoader();
       }, TRACE_TIMEOUT_MS);
 
       try {
+        // Use data URL to ImageTracer
         ImageTracer.imageToSVG(img.src, function (svgString) {
           if (timedOut) return;
           clearTimeout(traceTimer);
@@ -90,6 +85,7 @@ document.getElementById('convertBtn').addEventListener('click', () => {
             const parser = new DOMParser();
             const svgDoc = parser.parseFromString(svgString, 'image/svg+xml');
             const pathElements = svgDoc.querySelectorAll('path');
+
             if (!pathElements || pathElements.length === 0) {
               showMessage('Tracing berhasil, tapi tidak ada path vektor yang ditemukan.', 'error');
               convertBtn.disabled = false;
@@ -99,12 +95,11 @@ document.getElementById('convertBtn').addEventListener('click', () => {
             }
 
             const xmlContent = generateAlightMotionXML(pathElements);
-
             downloadXML('vector_shape_am.xml', xmlContent);
             showMessage('Selesai: file XML diunduh.', 'success');
           } catch (innerErr) {
             console.error('Error saat memproses SVG:', innerErr);
-            showMessage('Terjadi kesalahan saat memproses SVG. Lihat console untuk detail.', 'error');
+            showMessage('Terjadi kesalahan saat memproses SVG. Lihat console.', 'error');
           } finally {
             convertBtn.disabled = false;
             convertBtn.textContent = originalText;
@@ -140,16 +135,16 @@ document.getElementById('convertBtn').addEventListener('click', () => {
   reader.readAsDataURL(file);
 });
 
-// Generate XML that closely matches an Alight Motion exported project/preset
+// Generate XML similar to Alight Motion export format
 function generateAlightMotionXML(pathElements) {
-  // Scene dimensions: use preview natural size if available, fallback to 1080x1080
+  // Scene dims from preview (fallback 1080)
   const img = document.getElementById('imagePreview');
   const sceneWidth = (img && img.naturalWidth) ? Math.round(img.naturalWidth) : 1080;
   const sceneHeight = (img && img.naturalHeight) ? Math.round(img.naturalHeight) : 1080;
-  const centerX = (sceneWidth / 2).toFixed(6);
-  const centerY = (sceneHeight / 2).toFixed(6);
+  const centerX = (sceneWidth / 2);
+  const centerY = (sceneHeight / 2);
 
-  // Alight Motion metadata (these values mirror the example export; you can adjust if needed)
+  // AM metadata (mirror example export)
   const amver = '1028425';
   const ffver = '106';
   const amId = `com.alightcreative.motion/5.0.273.${amver}`;
@@ -165,18 +160,26 @@ function generateAlightMotionXML(pathElements) {
   let shapeLayers = '';
 
   Array.from(pathElements).forEach((path, index) => {
-    // Read path data and fill color
     let dAttr = path.getAttribute('d') || '';
-
-    // ImageTracer sometimes outputs relative cubic commands or includes commas; keep as-is but trim
     dAttr = dAttr.trim();
+
+    // Translate path to be relative to center using svgpath if available
+    let dForOutput = dAttr;
+    try {
+      if (typeof svgpath !== 'undefined' && dAttr) {
+        // translate by -centerX, -centerY so path coords become relative to location
+        dForOutput = svgpath(dAttr).translate(-centerX, -centerY).toString();
+      }
+    } catch (err) {
+      console.warn('svgpath translate failed, using original path d:', err);
+      dForOutput = dAttr;
+    }
 
     const fillColorRaw = path.getAttribute('fill');
     const fillColor = (fillColorRaw === null || fillColorRaw === '') ? '#ffffffff' : fillColorRaw;
     const amColor = formatToAMColor(fillColor);
 
-    // Escape minimal XML-sensitive chars in attributes
-    const safePath = escapeXml(dAttr);
+    const safePath = escapeXml(dForOutput);
     const safeColor = escapeXml(amColor);
 
     const id = index + 100;
@@ -184,7 +187,7 @@ function generateAlightMotionXML(pathElements) {
 
     shapeLayers += `\n  <shape id="${id}" label="${label}" startTime="0" endTime="${totalTime}" fillType="color" mediaFillMode="fill">` +
                    `\n    <transform>` +
-                   `\n      <location value="${centerX},${centerY},0.000000" />` +
+                   `\n      <location value="${centerX.toFixed(6)},${centerY.toFixed(6)},0.000000" />` +
                    `\n    </transform>` +
                    `\n    <fillColor value="${safeColor}" />` +
                    `\n    <path d="${safePath}" />` +
@@ -195,7 +198,7 @@ function generateAlightMotionXML(pathElements) {
   return header + '\n' + sceneOpen + shapeLayers + sceneClose;
 }
 
-// Helper: Escape XML attribute values
+// XML escaping for attribute values (minimal)
 function escapeXml(str) {
   if (str === null || str === undefined) return '';
   return String(str)
@@ -206,27 +209,19 @@ function escapeXml(str) {
     .replace(/'/g, '&apos;');
 }
 
-// Helper: Convert various color formats into AM's #AARRGGBB
+// Convert various color formats to #AARRGGBB (lowercase)
 function formatToAMColor(col) {
   if (!col) return '#ffffffff';
   col = String(col).trim();
   if (col === 'none') return '#00ffffff';
-
-  // If already #AARRGGBB
-  if (col.startsWith('#') && col.length === 9) return col.toLowerCase();
-
-  // #RRGGBB -> #AARRGGBB (opaque)
+  if (col.startsWith('#') && col.length === 9) return col.toLowerCase(); // already #AARRGGBB
   if (col.startsWith('#') && col.length === 7) return ('#ff' + col.slice(1)).toLowerCase();
-
-  // #RGB -> expand
   if (col.startsWith('#') && col.length === 4) {
     const r = col[1] + col[1];
     const g = col[2] + col[2];
     const b = col[3] + col[3];
     return ('#ff' + r + g + b).toLowerCase();
   }
-
-  // rgb()/rgba()
   const m = col.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/i);
   if (m) {
     const r = clamp(Number(m[1]), 0, 255);
@@ -235,14 +230,12 @@ function formatToAMColor(col) {
     const a = m[4] !== undefined ? Math.round(clamp(Number(m[4]), 0, 1) * 255) : 255;
     return ('#' + toHex(a) + toHex(r) + toHex(g) + toHex(b)).toLowerCase();
   }
-
   return '#ffffffff';
 }
 
 function toHex(n) { return ('0' + n.toString(16)).slice(-2); }
 function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
 
-// Download helper
 function downloadXML(filename, text) {
   const blob = new Blob([text], { type: 'application/xml;charset=UTF-8' });
   const url = URL.createObjectURL(blob);
@@ -271,6 +264,7 @@ function getOrCreateMessageEl() {
 function getOrCreateLoaderEl() {
   let el = document.getElementById('amLoader');
   if (el) return el;
+
   if (!document.getElementById('amLoaderStyles')) {
     const style = document.createElement('style');
     style.id = 'amLoaderStyles';
@@ -282,6 +276,7 @@ function getOrCreateLoaderEl() {
     `;
     document.head.appendChild(style);
   }
+
   el = document.createElement('div');
   el.id = 'amLoader';
   el.style.display = 'none';
