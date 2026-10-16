@@ -1,5 +1,5 @@
 // Updated app.js
-// Adds a loading animation while processing and ensures the loader stops on success or error.
+// Adds ImageTracer timeout (fallback), extra logging for debugging, and ensures the loader stops on timeout/error/success.
 
 // Main click handler
 document.getElementById('convertBtn').addEventListener('click', () => {
@@ -67,22 +67,61 @@ document.getElementById('convertBtn').addEventListener('click', () => {
     const img = document.getElementById('imagePreview');
     img.src = imgDataUrl;
 
+    // Timeout / debug settings
+    const TRACE_TIMEOUT_MS = 30000; // 30 detik
+
     img.onload = () => {
+      console.log('Preview image loaded. dataURL length =', img.src ? img.src.length : 0);
+
+      let timedOut = false;
+      const traceTimer = setTimeout(() => {
+        timedOut = true;
+        console.error('ImageTracer timeout: tidak ada callback dalam', TRACE_TIMEOUT_MS, 'ms');
+        showMessage('Proses terlalu lama — kemungkinan gambar terlalu besar atau library gagal memprosesnya.', 'error');
+        convertBtn.disabled = false;
+        convertBtn.textContent = originalText;
+        hideLoader();
+      }, TRACE_TIMEOUT_MS);
+
       try {
-        // PASS image.src (data URL) — bukan objek element <img>
+        console.log('Memanggil ImageTracer.imageToSVG dengan data URL...');
+        // PENTING: gunakan img.src (data URL), bukan objek element
         ImageTracer.imageToSVG(img.src, function (svgString) {
+          if (timedOut) {
+            console.warn('Hasil ImageTracer diterima setelah timeout — diabaikan.');
+            return;
+          }
+          clearTimeout(traceTimer);
+
+          console.log('ImageTracer callback dipanggil. svgString length =', svgString ? svgString.length : 0);
+          if (!svgString || svgString.indexOf('<svg') === -1) {
+            console.error('SVG kosong/tidak valid:', svgString);
+            showMessage('Hasil tracing kosong atau tidak valid. Lihat console untuk detail.', 'error');
+            convertBtn.disabled = false;
+            convertBtn.textContent = originalText;
+            hideLoader();
+            return;
+          }
+
           try {
-            // 2. Parse SVG untuk mengambil data path/titik
             const parser = new DOMParser();
             const svgDoc = parser.parseFromString(svgString, 'image/svg+xml');
             const pathElements = svgDoc.querySelectorAll('path');
+            console.log('Jumlah <path> ditemukan =', pathElements.length);
 
-            // 3. Generasi Konten XML Alight Motion
-            let xmlContent = generateAlightMotionXML(pathElements);
+            if (!pathElements || pathElements.length === 0) {
+              showMessage('Tracing berhasil, tapi tidak ada path vektor yang ditemukan.', 'error');
+              convertBtn.disabled = false;
+              convertBtn.textContent = originalText;
+              hideLoader();
+              return;
+            }
 
-            // 4. Unduh File XML (argumen: filename, text)
+            const xmlContent = generateAlightMotionXML(pathElements);
+            console.log('Generated XML length =', xmlContent.length);
+
+            // Unduh file
             downloadXML('vector_shape_am.xml', xmlContent);
-
             showMessage('Selesai: file XML diunduh.', 'success');
           } catch (innerErr) {
             console.error('Error saat memproses SVG:', innerErr);
@@ -94,6 +133,7 @@ document.getElementById('convertBtn').addEventListener('click', () => {
           }
         }, { lprs: 1, qtres: 1, numberofcolors: 4 }); // Opsi detail/presisi tracing
       } catch (err) {
+        clearTimeout(traceTimer);
         console.error('ImageTracer gagal dipanggil:', err);
         showMessage('Terjadi kesalahan saat memulai proses tracing.', 'error');
         convertBtn.disabled = false;
