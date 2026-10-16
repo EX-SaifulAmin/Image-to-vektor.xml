@@ -1,12 +1,12 @@
 // Updated app.js
-// Fixes: pass image.src to ImageTracer.imageToSVG (instead of <img> element),
-// disables button during processing to prevent double clicks, and shows
-// error/success messages on the page.
+// Adds a loading animation while processing and ensures the loader stops on success or error.
 
+// Main click handler
 document.getElementById('convertBtn').addEventListener('click', () => {
   const convertBtn = document.getElementById('convertBtn');
   const fileInput = document.getElementById('imageInput');
   const messageEl = getOrCreateMessageEl();
+  const loader = getOrCreateLoaderEl();
 
   // Helper to show messages on the page
   function showMessage(text, type = 'info') {
@@ -28,8 +28,22 @@ document.getElementById('convertBtn').addEventListener('click', () => {
     }
   }
 
-  // Reset any previous message
-  showMessage('', 'info');
+  function clearMessage() {
+    messageEl.textContent = '';
+    messageEl.style.display = 'none';
+  }
+
+  function showLoader() {
+    loader.style.display = 'flex';
+  }
+
+  function hideLoader() {
+    loader.style.display = 'none';
+  }
+
+  // Reset any previous message/loader
+  clearMessage();
+  hideLoader();
 
   if (!fileInput.files[0]) {
     showMessage('Pilih gambar terlebih dahulu!', 'error');
@@ -41,6 +55,7 @@ document.getElementById('convertBtn').addEventListener('click', () => {
   const originalText = convertBtn.textContent;
   convertBtn.textContent = 'Memproses...';
   showMessage('Memproses gambar — tunggu sebentar...', 'info');
+  showLoader();
 
   const file = fileInput.files[0];
   const reader = new FileReader();
@@ -75,6 +90,7 @@ document.getElementById('convertBtn').addEventListener('click', () => {
           } finally {
             convertBtn.disabled = false;
             convertBtn.textContent = originalText;
+            hideLoader();
           }
         }, { lprs: 1, qtres: 1, numberofcolors: 4 }); // Opsi detail/presisi tracing
       } catch (err) {
@@ -82,6 +98,7 @@ document.getElementById('convertBtn').addEventListener('click', () => {
         showMessage('Terjadi kesalahan saat memulai proses tracing.', 'error');
         convertBtn.disabled = false;
         convertBtn.textContent = originalText;
+        hideLoader();
       }
     };
 
@@ -89,6 +106,7 @@ document.getElementById('convertBtn').addEventListener('click', () => {
       showMessage('Gagal memuat gambar. Pastikan file gambar valid.', 'error');
       convertBtn.disabled = false;
       convertBtn.textContent = originalText;
+      hideLoader();
     };
   };
 
@@ -97,6 +115,7 @@ document.getElementById('convertBtn').addEventListener('click', () => {
     showMessage('Gagal membaca file. Coba lagi.', 'error');
     convertBtn.disabled = false;
     convertBtn.textContent = originalText;
+    hideLoader();
   };
 
   reader.readAsDataURL(file);
@@ -202,6 +221,43 @@ function getOrCreateMessageEl() {
   el = document.createElement('div');
   el.id = 'amMessage';
   el.style.display = 'none';
+  const container = document.querySelector('.container') || document.body;
+  container.appendChild(el);
+  return el;
+}
+
+// Helper: create or get a loader element (simple spinner)
+function getOrCreateLoaderEl() {
+  let el = document.getElementById('amLoader');
+  if (el) return el;
+
+  // ensure spinner CSS only injected once
+  if (!document.getElementById('amLoaderStyles')) {
+    const style = document.createElement('style');
+    style.id = 'amLoaderStyles';
+    style.textContent = `
+      @keyframes am-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+      #amLoader { display: none; align-items: center; gap: 10px; margin-top: 10px; }
+      #amLoader .am-dot { width: 14px; height: 14px; border-radius: 50%; border: 2px solid #3b82f6; border-top-color: transparent; animation: am-spin 1s linear infinite; }
+      #amLoader .am-text { color: #002244; font-size: 14px; }
+    `;
+    document.head.appendChild(style);
+  }
+
+  el = document.createElement('div');
+  el.id = 'amLoader';
+  el.style.display = 'none';
+  el.style.alignItems = 'center';
+
+  const dot = document.createElement('div');
+  dot.className = 'am-dot';
+  const txt = document.createElement('div');
+  txt.className = 'am-text';
+  txt.textContent = 'Memproses...';
+
+  el.appendChild(dot);
+  el.appendChild(txt);
+
   const container = document.querySelector('.container') || document.body;
   container.appendChild(el);
   return el;
