@@ -1,5 +1,6 @@
-// Updated app.js
-// Adds ImageTracer timeout (fallback), extra logging for debugging, and ensures the loader stops on timeout/error/success.
+// Updated app.js — generate Alight Motion compatible XML structure
+// Adds generation of <scene> and <shape> elements matching exported AM structure.
+// Keeps tracing, SVG parsing, and download logic from previous version.
 
 // Main click handler
 document.getElementById('convertBtn').addEventListener('click', () => {
@@ -163,28 +164,44 @@ document.getElementById('convertBtn').addEventListener('click', () => {
 
 // Fungsi Menyusun XML Khas Alight Motion
 function generateAlightMotionXML(pathElements) {
+  // Determine scene dimensions from preview image (fallback to 1080x1920)
+  const img = document.getElementById('imagePreview');
+  const sceneWidth = (img && img.naturalWidth) ? Math.round(img.naturalWidth) : 1080;
+  const sceneHeight = (img && img.naturalHeight) ? Math.round(img.naturalHeight) : 1920;
+  const centerX = (sceneWidth / 2).toFixed(6);
+  const centerY = (sceneHeight / 2).toFixed(6);
+
+  // Build shapes following Alight Motion exported structure
   let shapeLayers = '';
 
   Array.from(pathElements).forEach((path, index) => {
     const dAttr = path.getAttribute('d') || '';
     const fillColorRaw = path.getAttribute('fill');
-    const fillColor = fillColorRaw === null ? '#ffffff' : fillColorRaw;
+    const fillColor = fillColorRaw === null ? '#ffffffff' : fillColorRaw; // default white
 
-    // Format hexadecimal color ke format ARGB Alight Motion
+    // Format color to AM ARGB
     const amColor = formatToAMColor(fillColor);
 
-    // Escape path data dan warna untuk XML
+    // Escape attributes
     const safePath = escapeXml(dAttr);
     const safeColor = escapeXml(amColor);
 
-    shapeLayers += `\n  <shape id="${index + 100}" name="Vector Shape ${index + 1}" type="path">\n` +
-      `    <property name="fillColor" value="${safeColor}" />\n` +
-      `    <property name="pathData" value="${safePath}" />\n` +
+    const id = index + 100;
+    const label = `Shape ${index + 1}`;
+
+    shapeLayers += `\n  <shape id="${id}" label="${label}" startTime="0" endTime="2032" fillType="color" mediaFillMode="fill">\n` +
+      `    <transform>\n      <location value="${centerX},${centerY},0.000000" />\n    </transform>\n` +
+      `    <fillColor value="${safeColor}" />\n` +
+      `    <path d="${safePath}" />\n` +
       `  </shape>`;
   });
 
-  // Skema Wrapper XML Alight Motion Project (sederhana)
-  return `<?xml version="1.0" encoding="UTF-8"?>\n<scene width="1080" height="1920" fps="30" backgroundColor="#ff000000">${shapeLayers}\n</scene>`;
+  const modifiedTime = Date.now();
+  // Build scene wrapper similar to exported AM file
+  const sceneHeader = `<?xml version='1.0' encoding='UTF-8' ?><!--Created by Image-to-vektor.xml converter-->\n` +
+    `<scene title="Vector Export" width="${sceneWidth}" height="${sceneHeight}" exportWidth="${sceneWidth}" exportHeight="${sceneHeight}" precompose="dynamicResolution" bgcolor="#ff000000" totalTime="2032" fps="30" modifiedTime="${modifiedTime}" retime="freeze" retimeAdaptFPS="false">`;
+
+  return `${sceneHeader}${shapeLayers}\n</scene>`;
 }
 
 // Helper: Escape XML atribut
@@ -194,7 +211,7 @@ function escapeXml(str) {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/\"/g, '&quot;')
+    .replace(/"/g, '&quot;')
     .replace(/'/g, '&apos;');
 }
 
@@ -204,6 +221,11 @@ function formatToAMColor(col) {
   col = col.trim();
   // Transparansi explicit
   if (col === 'none') return '#00ffffff';
+
+  // If already in #AARRGGBB (8 chars after #)
+  if (col.startsWith('#') && col.length === 9) {
+    return col;
+  }
 
   // Hex #RRGGBB atau #RGB
   if (col.startsWith('#')) {
