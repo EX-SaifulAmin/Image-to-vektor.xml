@@ -1,9 +1,46 @@
+// Updated app.js
+// Fixes: pass image.src to ImageTracer.imageToSVG (instead of <img> element),
+// disables button during processing to prevent double clicks, and shows
+// error/success messages on the page.
+
 document.getElementById('convertBtn').addEventListener('click', () => {
+  const convertBtn = document.getElementById('convertBtn');
   const fileInput = document.getElementById('imageInput');
+  const messageEl = getOrCreateMessageEl();
+
+  // Helper to show messages on the page
+  function showMessage(text, type = 'info') {
+    messageEl.textContent = text;
+    messageEl.style.display = 'block';
+    messageEl.style.padding = '8px 10px';
+    messageEl.style.borderRadius = '4px';
+    messageEl.style.marginTop = '10px';
+    if (type === 'error') {
+      messageEl.style.background = '#ffdddd';
+      messageEl.style.color = '#660000';
+      messageEl.setAttribute('role', 'alert');
+    } else if (type === 'success') {
+      messageEl.style.background = '#ddffdd';
+      messageEl.style.color = '#003300';
+    } else {
+      messageEl.style.background = '#eef3ff';
+      messageEl.style.color = '#002244';
+    }
+  }
+
+  // Reset any previous message
+  showMessage('', 'info');
+
   if (!fileInput.files[0]) {
-    alert("Pilih gambar terlebih dahulu!");
+    showMessage('Pilih gambar terlebih dahulu!', 'error');
     return;
   }
+
+  // Disable button to prevent duplicate clicks while processing
+  convertBtn.disabled = true;
+  const originalText = convertBtn.textContent;
+  convertBtn.textContent = 'Memproses...';
+  showMessage('Memproses gambar — tunggu sebentar...', 'info');
 
   const file = fileInput.files[0];
   const reader = new FileReader();
@@ -16,24 +53,50 @@ document.getElementById('convertBtn').addEventListener('click', () => {
     img.src = imgDataUrl;
 
     img.onload = () => {
-      // 1. Jalankan Tracing Gambar ke Data Vektor SVG menggunakan elemen <img>
-      ImageTracer.imageToSVG(img, function (svgString) {
-        // 2. Parse SVG untuk mengambil data path/titik
-        const parser = new DOMParser();
-        const svgDoc = parser.parseFromString(svgString, "image/svg+xml");
-        const pathElements = svgDoc.querySelectorAll('path');
+      try {
+        // PASS image.src (data URL) — bukan objek element <img>
+        ImageTracer.imageToSVG(img.src, function (svgString) {
+          try {
+            // 2. Parse SVG untuk mengambil data path/titik
+            const parser = new DOMParser();
+            const svgDoc = parser.parseFromString(svgString, 'image/svg+xml');
+            const pathElements = svgDoc.querySelectorAll('path');
 
-        // 3. Generasi Konten XML Alight Motion
-        let xmlContent = generateAlightMotionXML(pathElements);
+            // 3. Generasi Konten XML Alight Motion
+            let xmlContent = generateAlightMotionXML(pathElements);
 
-        // 4. Unduh File XML (argumen: filename, text)
-        downloadXML("vector_shape_am.xml", xmlContent);
-      }, { lprs: 1, qtres: 1, numberofcolors: 4 }); // Opsi detail/presisi tracing
+            // 4. Unduh File XML (argumen: filename, text)
+            downloadXML('vector_shape_am.xml', xmlContent);
+
+            showMessage('Selesai: file XML diunduh.', 'success');
+          } catch (innerErr) {
+            console.error('Error saat memproses SVG:', innerErr);
+            showMessage('Terjadi kesalahan saat memproses SVG. Lihat console untuk detail.', 'error');
+          } finally {
+            convertBtn.disabled = false;
+            convertBtn.textContent = originalText;
+          }
+        }, { lprs: 1, qtres: 1, numberofcolors: 4 }); // Opsi detail/presisi tracing
+      } catch (err) {
+        console.error('ImageTracer gagal dipanggil:', err);
+        showMessage('Terjadi kesalahan saat memulai proses tracing.', 'error');
+        convertBtn.disabled = false;
+        convertBtn.textContent = originalText;
+      }
     };
 
     img.onerror = () => {
-      alert('Gagal memuat gambar. Pastikan file gambar valid.');
+      showMessage('Gagal memuat gambar. Pastikan file gambar valid.', 'error');
+      convertBtn.disabled = false;
+      convertBtn.textContent = originalText;
     };
+  };
+
+  reader.onerror = function (e) {
+    console.error('FileReader error:', e);
+    showMessage('Gagal membaca file. Coba lagi.', 'error');
+    convertBtn.disabled = false;
+    convertBtn.textContent = originalText;
   };
 
   reader.readAsDataURL(file);
@@ -51,11 +114,18 @@ function generateAlightMotionXML(pathElements) {
     // Format hexadecimal color ke format ARGB Alight Motion
     const amColor = formatToAMColor(fillColor);
 
-    shapeLayers += `\n    <shape id="${index + 100}" name="Vector Shape ${index + 1}" type="path">\n      <property name="fillColor" value="${escapeXml(amColor)}" />\n      <property name="pathData" value="${escapeXml(dAttr)}" />\n      <transform>\n        <position x="540.0" y="960.0" />\n        <scale x="1.0" y="1.0" />\n      </transform>\n    </shape>`;
+    // Escape path data dan warna untuk XML
+    const safePath = escapeXml(dAttr);
+    const safeColor = escapeXml(amColor);
+
+    shapeLayers += `\n  <shape id="${index + 100}" name="Vector Shape ${index + 1}" type="path">\n` +
+      `    <property name="fillColor" value="${safeColor}" />\n` +
+      `    <property name="pathData" value="${safePath}" />\n` +
+      `  </shape>`;
   });
 
-  // Skema Wrapper XML Alight Motion Project
-  return `<?xml version="1.0" encoding="UTF-8"?>\n<scene width="1080" height="1920" fps="30" backgroundColor="#ff000000">\n  ${shapeLayers}\n</scene>`;
+  // Skema Wrapper XML Alight Motion Project (sederhana)
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<scene width="1080" height="1920" fps="30" backgroundColor="#ff000000">${shapeLayers}\n</scene>`;
 }
 
 // Helper: Escape XML atribut
@@ -123,4 +193,16 @@ function downloadXML(filename, text) {
   link.click();
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
+}
+
+// Helper: create or get a message element on the page
+function getOrCreateMessageEl() {
+  let el = document.getElementById('amMessage');
+  if (el) return el;
+  el = document.createElement('div');
+  el.id = 'amMessage';
+  el.style.display = 'none';
+  const container = document.querySelector('.container') || document.body;
+  container.appendChild(el);
+  return el;
 }
