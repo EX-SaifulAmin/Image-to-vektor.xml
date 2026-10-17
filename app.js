@@ -86,6 +86,7 @@ document.getElementById('convertBtn').addEventListener('click', () => {
         const numberofcolors = maxShapesPerColorEl ? Math.max(1, parseInt(maxShapesPerColorEl.value) || 2) : 2;
         const maxTotalShapes = maxTotalShapesEl ? Math.max(0, parseInt(maxTotalShapesEl.value) || 0) : 0;
 
+        // DITAMBAHKAN: pathomit: 10 untuk membuang noise/titik path terlalu kecil
         ImageTracer.imageToSVG(img.src, function (svgString) {
           if (timedOut) {
             console.warn('Hasil ImageTracer diterima setelah timeout — diabaikan.');
@@ -122,7 +123,15 @@ document.getElementById('convertBtn').addEventListener('click', () => {
               pathsArr = pathsArr.slice(0, maxTotalShapes);
             }
 
-            const xmlContent = generateAlightMotionXML(pathsArr, 1080, 1080, maxTotalShapes || 500);
+            // DITAMBAHKAN: Mengirim img.naturalWidth dan img.naturalHeight
+            const xmlContent = generateAlightMotionXML(
+              pathsArr, 
+              1080, 
+              1080, 
+              maxTotalShapes || 500, 
+              img.naturalWidth, 
+              img.naturalHeight
+            );
 
             const blob = new Blob([xmlContent], { type: 'application/xml' });
             const url = URL.createObjectURL(blob);
@@ -138,7 +147,7 @@ document.getElementById('convertBtn').addEventListener('click', () => {
             convertBtn.textContent = originalText;
             hideLoader();
           }
-        }, { lprs: 1, qtres: 1, numberofcolors: numberofcolors });
+        }, { lprs: 1, qtres: 1, numberofcolors: numberofcolors, pathomit: 10 });
       } catch (err) {
         clearTimeout(traceTimer);
         console.error('ImageTracer gagal dipanggil:', err);
@@ -168,7 +177,8 @@ document.getElementById('convertBtn').addEventListener('click', () => {
   reader.readAsDataURL(file);
 });
 
-function generateAlightMotionXML(pathElements, sceneWidth = 1080, sceneHeight = 1080, maxShapes = 500) {
+// DITAMBAHKAN: Parameter imgW dan imgH
+function generateAlightMotionXML(pathElements, sceneWidth = 1080, sceneHeight = 1080, maxShapes = 500, imgW = 1080, imgH = 1080) {
   const title = 'Exported Vector';
   const exportW = sceneWidth;
   const exportH = sceneHeight;
@@ -217,23 +227,37 @@ function generateAlightMotionXML(pathElements, sceneWidth = 1080, sceneHeight = 
     return { minX, minY, maxX, maxY, width: maxX - minX, height: maxY - minY };
   }
 
-  function normalizePathToAM(d, sceneW, sceneH) {
+  // DITAMBAHKAN: Deteksi path kosong/garis bolak-balik
+  function isZeroAreaPath(d) {
+    const nums = extractNumbers(d);
+    if (nums.length <= 4) return true; 
+    if (nums.length === 6) {
+      if (Math.abs(nums[0] - nums[4]) < 0.1 && Math.abs(nums[1] - nums[5]) < 0.1) return true;
+    }
+    return false;
+  }
+
+  // DIREVISI: Memakai titik tengah global, validasi float, dan spasi
+  function normalizePathToAM(d, sceneW, sceneH, imgW, imgH) {
     if (!d) return '';
     let clean = String(d).replace(/\s+/g, ' ').trim();
     clean = clean.replace(/"/g, "'");
 
-    // Use svgpath if available. It is already loaded in index.html.
     if (typeof window !== 'undefined' && typeof window.svgpath === 'function') {
       try {
-        const box = getBBoxFromPathD(clean);
-        if (box) {
-          const centerX = box.minX + box.width / 2;
-          const centerY = box.minY + box.height / 2;
-          const p = window.svgpath(clean).translate(-centerX, -centerY);
-          return p.toString().replace(/"/g, "'");
-        }
+        const centerX = (imgW || sceneW) / 2;
+        const centerY = (imgH || sceneH) / 2;
+        
+        const p = window.svgpath(clean).translate(-centerX, -centerY).round(3);
+        let dStr = p.toString();
+        
+        dStr = dStr.replace(/(?<!\d\.)\b(-?\d+)\b(?!\.)/g, '$1.0');
+        dStr = dStr.replace(/\s+([A-Za-z])/g, '$1');
+        dStr = dStr.replace(/M([^\s])/gi, 'M $1');
+        
+        return dStr;
       } catch (err) {
-        console.warn('svgpath transform failed, using raw d instead:', err);
+        console.warn('svgpath transform failed:', err);
       }
     }
 
@@ -283,9 +307,16 @@ function generateAlightMotionXML(pathElements, sceneWidth = 1080, sceneHeight = 
       const sub = subpaths[si];
       if (!sub) continue;
 
-      const translatedSub = normalizePathToAM(sub, sceneWidth, sceneHeight);
+      // DITAMBAHKAN: Mengirim parameter imgW dan imgH
+      const translatedSub = normalizePathToAM(sub, sceneWidth, sceneHeight, imgW, imgH);
       if (!translatedSub) continue;
       if (isCanvasLikeBackground(translatedSub)) continue;
+      
+      // DITAMBAHKAN: Blokir path dengan area kosong
+      if (isZeroAreaPath(translatedSub)) {
+         console.log("Zero-area path terdeteksi dan dibuang:", translatedSub);
+         continue; 
+      }
 
       const safeD = translatedSub
         .replace(/&/g, '&amp;')
@@ -411,4 +442,4 @@ function getOrCreateLoaderEl() {
   const container = document.querySelector('.container') || document.body;
   container.appendChild(el);
   return el;
-}
+                                                       }
