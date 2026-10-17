@@ -1,7 +1,8 @@
 // app.js - improved generator for Alight Motion compatibility
-// - Use ImageTracer.imageToSVG with img.src
+// - Complete generateAlightMotionXML to produce a valid AM scene XML (based on sample export)
+// - Read options from UI (max shapes per color -> passed as numberofcolors; max total shapes -> limit)
 // - Keep loader and messages
-// - Generate <path d="..."/> with raw path data (no XML escaping)
+// - Generate <path d="..."/> with raw path data (no XML escaping for d attribute)
 // - Ensure fillColor is 8-hex #AARRGGBB
 // - Open generated XML in a new tab for inspection before download
 
@@ -77,6 +78,13 @@ document.getElementById('convertBtn').addEventListener('click', () => {
 
       try {
         console.log('Memanggil ImageTracer.imageToSVG dengan data URL...');
+
+        // Get options from UI
+        const maxShapesPerColorEl = document.getElementById('maxShapesPerColor');
+        const maxTotalShapesEl = document.getElementById('maxTotalShapes');
+        const numberofcolors = maxShapesPerColorEl ? Math.max(1, parseInt(maxShapesPerColorEl.value) || 2) : 2;
+        const maxTotalShapes = maxTotalShapesEl ? Math.max(0, parseInt(maxTotalShapesEl.value) || 0) : 0;
+
         ImageTracer.imageToSVG(img.src, function (svgString) {
           if (timedOut) {
             console.warn('Hasil ImageTracer diterima setelah timeout — diabaikan.');
@@ -108,8 +116,15 @@ document.getElementById('convertBtn').addEventListener('click', () => {
               return;
             }
 
+            // Turn NodeList into array and optionally limit total shapes
+            let pathsArr = Array.from(pathElements);
+            if (maxTotalShapes > 0 && pathsArr.length > maxTotalShapes) {
+              console.warn('Membatasi jumlah path dari', pathsArr.length, 'ke', maxTotalShapes);
+              pathsArr = pathsArr.slice(0, maxTotalShapes);
+            }
+
             // Generate AM-compatible XML (do NOT escape path d)
-            const xmlContent = generateAlightMotionXML(pathElements, 1080, 1080);
+            const xmlContent = generateAlightMotionXML(pathsArr, 1080, 1080);
 
             // Open in new tab for inspection and then trigger download
             const blob = new Blob([xmlContent], { type: 'application/xml' });
@@ -127,7 +142,7 @@ document.getElementById('convertBtn').addEventListener('click', () => {
             convertBtn.textContent = originalText;
             hideLoader();
           }
-        }, { lprs: 1, qtres: 1, numberofcolors: 2 }); // use fewer colors for simpler paths by default
+        }, { lprs: 1, qtres: 1, numberofcolors: numberofcolors }); // pass numberofcolors from UI
       } catch (err) {
         clearTimeout(traceTimer);
         console.error('ImageTracer gagal dipanggil:', err);
@@ -159,7 +174,7 @@ document.getElementById('convertBtn').addEventListener('click', () => {
 
 // New: generate XML in Alight Motion export format
 function generateAlightMotionXML(pathElements, sceneWidth = 1080, sceneHeight = 1080) {
-  const title = 'Vector Export';
+  const title = 'Exported Vector';
   const exportW = sceneWidth;
   const exportH = sceneHeight;
   const totalTime = 2032;
@@ -167,33 +182,44 @@ function generateAlightMotionXML(pathElements, sceneWidth = 1080, sceneHeight = 
   const modifiedTime = Date.now();
   const amver = '1028425';
   const ffver = '106';
-  const bgcolor = '#ff000000';
+  // Use a neutral background similar to sample; callers can tweak if needed
+  const bgcolor = '#ffd8d8d8';
 
   let shapeBlocks = '';
 
-  Array.from(pathElements).forEach((path, idx) => {
+  const centerX = (sceneWidth / 2).toFixed(6);
+  const centerY = (sceneHeight / 2).toFixed(6);
+
+  pathElements.forEach((path, idx) => {
     // raw path data (do NOT escape)
     let d = path.getAttribute('d') || '';
     // normalize whitespace
     d = d.replace(/\s+/g, ' ').trim();
 
-    const fillRaw = path.getAttribute('fill');
+    const fillRaw = path.getAttribute('fill') || path.style && path.style.fill;
     const fill = formatToAMColor(fillRaw);
 
-    const cx = (sceneWidth / 2).toFixed(6);
-    const cy = (sceneHeight / 2).toFixed(6);
+    // ensure d does not contain double quotes (AM xml will use double quotes)
+    const safeD = d.replace(/\"/g, "'");
 
-    // ensure d does not contain double quotes
-    const safeD = d.replace(/"/g, "'");
+    const shapeId = 101 + idx; // start ids at 101 like the sample
+    const label = `Shape ${idx + 1}`;
 
-    shapeBlocks += `\n  <shape id="${100 + idx}" label="Shape ${idx + 1}" startTime="0" endTime="${totalTime}" fillType="color" mediaFillMode="fill">\n` +
-      `    <transform>\n      <location value="${cx},${cy},0.000000" />\n    </transform>\n` +
+    shapeBlocks += `  <shape id="${shapeId}" label="${escapeXml(label)}" startTime="0" endTime="${totalTime}" fillType="color" mediaFillMode="fill">\n` +
+      `    <transform>\n      <location value="${centerX},${centerY},0.000000" />\n    </transform>\n` +
       `    <fillColor value="${fill}" />\n` +
-      `    <path d="${safeD}" />\n  </shape>`;
+      `    <path d="${safeD}" />\n` +
+      `  </shape>\n`;
   });
 
-  return `<?xml version="1.0" encoding="UTF-8" ?><!--\nCreated by Image-to-vektor.xml\nExported: ${new Date().toLocaleString()}\n-->\n` +
-    `<scene title="${title}" width="${sceneWidth}" height="${sceneHeight}" exportWidth="${exportW}" exportHeight="${exportH}" precompose="dynamicResolution" bgcolor="${bgcolor}" totalTime="${totalTime}" fps="${fps}" modifiedTime="${modifiedTime}" amver="${amver}" ffver="${ffver}" am="com.alightcreative.motion/${amver}" amplatform="android" retime="freeze" retimeAdaptFPS="false">${shapeBlocks}\n</scene>`;
+  // Build header using fields similar to the exported sample
+  const header = `<?xml version="1.0" encoding="UTF-8" ?><!--\nCreated by Image-to-vektor.xml\nExported: ${new Date().toLocaleString()}\n-->\n`;
+
+  const sceneOpen = `<scene title="${escapeXml(title)}" width="${sceneWidth}" height="${sceneHeight}" exportWidth="${exportW}" exportHeight="${exportH}" precompose="dynamicResolution" bgcolor="${bgcolor}" totalTime="${totalTime}" fps="${fps}" modifiedTime="${modifiedTime}" amver="${amver}" ffver="${ffver}" am="com.alightcreative.motion/5.0.273.1028425" amplatform="android" retime="freeze" retimeAdaptFPS="false">\n`;
+
+  const sceneClose = `</scene>`;
+
+  return header + sceneOpen + shapeBlocks + sceneClose;
 }
 
 // Helper: Escape XML atribut (still used for non-path values if needed)
@@ -214,6 +240,7 @@ function formatToAMColor(col) {
   if (col === 'none') return '#00ffffff';
 
   if (col.startsWith('#')) {
+    // normalize #RRGGBB or #RGB
     if (col.length === 7) return ('#ff' + col.slice(1)).toLowerCase();
     if (col.length === 4) {
       const r = col[1] + col[1];
@@ -221,7 +248,7 @@ function formatToAMColor(col) {
       const b = col[3] + col[3];
       return ('#ff' + r + g + b).toLowerCase();
     }
-    // if already 9 (unlikely) or 8
+    // if already #AARRGGBB or #RRGGBBAA variations
     if (col.length === 9) return col.toLowerCase();
     if (col.length === 8) return ('#' + col.slice(1)).toLowerCase();
   }
