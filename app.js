@@ -1,11 +1,12 @@
 // app.js - improved generator for Alight Motion compatibility
-// - Complete generateAlightMotionXML to produce a valid AM scene XML (based on sample export)
-// - Read options from UI (max shapes per color -> passed as numberofcolors; max total shapes -> limit)
+// - Use ImageTracer.imageToSVG with img.src
 // - Keep loader and messages
 // - Generate <path d="..."/> with raw path data (no XML escaping for d attribute)
 // - Ensure fillColor is 8-hex #AARRGGBB
 // - Open generated XML in a new tab for inspection before download
-// - Validate XML before download and split multiple subpaths to improve compatibility
+// - Validate XML before download
+// - Split multiple subpaths and drop large background-like shapes to improve compatibility
+// - Add debug export limit (first N shapes) for testing on mobile
 
 document.getElementById('convertBtn').addEventListener('click', () => {
   const convertBtn = document.getElementById('convertBtn');
@@ -121,7 +122,7 @@ document.getElementById('convertBtn').addEventListener('click', () => {
               pathsArr = pathsArr.slice(0, maxTotalShapes);
             }
 
-            const xmlContent = generateAlightMotionXML(pathsArr, 1080, 1080, maxTotalShapes || 800);
+            const xmlContent = generateAlightMotionXML(pathsArr, 1080, 1080, maxTotalShapes || 500);
 
             const blob = new Blob([xmlContent], { type: 'application/xml' });
             const url = URL.createObjectURL(blob);
@@ -167,7 +168,7 @@ document.getElementById('convertBtn').addEventListener('click', () => {
   reader.readAsDataURL(file);
 });
 
-function generateAlightMotionXML(pathElements, sceneWidth = 1080, sceneHeight = 1080, maxShapes = 800) {
+function generateAlightMotionXML(pathElements, sceneWidth = 1080, sceneHeight = 1080, maxShapes = 500) {
   const title = 'Exported Vector';
   const exportW = sceneWidth;
   const exportH = sceneHeight;
@@ -189,25 +190,55 @@ function generateAlightMotionXML(pathElements, sceneWidth = 1080, sceneHeight = 
       .replace(/'/g, '&apos;');
   }
 
-  function isCanvasRect(d) {
+  function normalizeNumbers(str) {
+    return String(str).replace(/\s+/g, ' ').trim();
+  }
+
+  function extractNumbers(pathStr) {
+    const nums = (String(pathStr).match(/-?\d*\.?\d+(?:e[-+]?\d+)?/g) || []).map(Number);
+    return nums;
+  }
+
+  function getBBoxFromPathD(d) {
+    const numbers = extractNumbers(d);
+    if (numbers.length < 2) return null;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (let i = 0; i < numbers.length; i += 2) {
+      if (i + 1 < numbers.length) {
+        const x = numbers[i];
+        const y = numbers[i + 1];
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x);
+        maxY = Math.max(maxY, y);
+      }
+    }
+    if (minX === Infinity) return null;
+    return { minX, minY, maxX, maxY, width: maxX - minX, height: maxY - minY };
+  }
+
+  function isCanvasLikeBackground(d) {
     if (!d) return false;
-    return /M\s*0\s*0[\s\S]*L\s*\d+\s*0[\s\S]*L\s*\d+\s*\d+[\s\S]*L\s*0\s*\d+/i.test(d);
+    const box = getBBoxFromPathD(d);
+    if (!box) return false;
+    const coverageX = box.width / sceneWidth;
+    const coverageY = box.height / sceneHeight;
+    const isLarge = coverageX > 0.8 && coverageY > 0.8;
+    // Also catch obvious full-rect/near full-rect shapes that span almost the whole canvas
+    return isLarge || /M\s*\d+\.?\d*\s*\d+\.?\d*[\s\S]*L\s*\d+\.?\d*\s*\d+\.?\d*[\s\S]*L\s*\d+\.?\d*\s*\d+\.?\d*[\s\S]*L\s*\d+\.?\d*\s*\d+\.?\d*/i.test(d);
   }
 
   function splitSubpaths(d) {
     if (!d) return [];
-    d = String(d).replace(/\s+/g, ' ').trim();
-    d = d.replace(/"/g, "'");
-
-    // split at each new command starting with M, but keep each subpath whole
-    const parts = [];
+    d = normalizeNumbers(d).replace(/"/g, "'");
+    const subpaths = [];
     const matches = d.match(/M[^M]+(?:[A-Za-z][^M]*)*/g) || [];
     if (matches.length > 0) {
       matches.forEach(m => {
         const clean = m.trim();
-        if (clean) parts.push(clean);
+        if (clean) subpaths.push(clean);
       });
-      return parts;
+      return subpaths;
     }
     return [d];
   }
@@ -229,7 +260,7 @@ function generateAlightMotionXML(pathElements, sceneWidth = 1080, sceneHeight = 
     for (let si = 0; si < subpaths.length && shapeCount < limit; si++) {
       const sub = subpaths[si];
       if (!sub) continue;
-      if (isCanvasRect(sub)) continue;
+      if (isCanvasLikeBackground(sub)) continue;
 
       const safeD = sub
         .replace(/&/g, '&amp;')
@@ -255,7 +286,6 @@ function generateAlightMotionXML(pathElements, sceneWidth = 1080, sceneHeight = 
 
   const xml = header + sceneOpen + shapeBlocks + sceneClose;
 
-  // Validate XML before returning; if invalid, throw to stop broken export.
   const parsed = new DOMParser().parseFromString(xml, 'application/xml');
   const parserError = parsed.querySelector('parsererror');
   if (parserError) {
