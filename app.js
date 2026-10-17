@@ -6,7 +6,7 @@
 // - Open generated XML in a new tab for inspection before download
 // - Validate XML before download
 // - Split multiple subpaths and drop large background-like shapes to improve compatibility
-// - Add debug export limit (first N shapes) for testing on mobile
+// - Center and translate path data around the AM scene origin to more closely match native exports
 
 document.getElementById('convertBtn').addEventListener('click', () => {
   const convertBtn = document.getElementById('convertBtn');
@@ -217,6 +217,29 @@ function generateAlightMotionXML(pathElements, sceneWidth = 1080, sceneHeight = 
     return { minX, minY, maxX, maxY, width: maxX - minX, height: maxY - minY };
   }
 
+  function normalizePathToAM(d, sceneW, sceneH) {
+    if (!d) return '';
+    let clean = String(d).replace(/\s+/g, ' ').trim();
+    clean = clean.replace(/"/g, "'");
+
+    // Use svgpath if available. It is already loaded in index.html.
+    if (typeof window !== 'undefined' && typeof window.svgpath === 'function') {
+      try {
+        const box = getBBoxFromPathD(clean);
+        if (box) {
+          const centerX = box.minX + box.width / 2;
+          const centerY = box.minY + box.height / 2;
+          const p = window.svgpath(clean).translate(-centerX, -centerY);
+          return p.toString().replace(/"/g, "'");
+        }
+      } catch (err) {
+        console.warn('svgpath transform failed, using raw d instead:', err);
+      }
+    }
+
+    return clean;
+  }
+
   function isCanvasLikeBackground(d) {
     if (!d) return false;
     const box = getBBoxFromPathD(d);
@@ -224,7 +247,6 @@ function generateAlightMotionXML(pathElements, sceneWidth = 1080, sceneHeight = 
     const coverageX = box.width / sceneWidth;
     const coverageY = box.height / sceneHeight;
     const isLarge = coverageX > 0.8 && coverageY > 0.8;
-    // Also catch obvious full-rect/near full-rect shapes that span almost the whole canvas
     return isLarge || /M\s*\d+\.?\d*\s*\d+\.?\d*[\s\S]*L\s*\d+\.?\d*\s*\d+\.?\d*[\s\S]*L\s*\d+\.?\d*\s*\d+\.?\d*[\s\S]*L\s*\d+\.?\d*\s*\d+\.?\d*/i.test(d);
   }
 
@@ -260,9 +282,12 @@ function generateAlightMotionXML(pathElements, sceneWidth = 1080, sceneHeight = 
     for (let si = 0; si < subpaths.length && shapeCount < limit; si++) {
       const sub = subpaths[si];
       if (!sub) continue;
-      if (isCanvasLikeBackground(sub)) continue;
 
-      const safeD = sub
+      const translatedSub = normalizePathToAM(sub, sceneWidth, sceneHeight);
+      if (!translatedSub) continue;
+      if (isCanvasLikeBackground(translatedSub)) continue;
+
+      const safeD = translatedSub
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;');
