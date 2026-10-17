@@ -5,6 +5,7 @@
 // - Generate <path d="..."/> with raw path data (no XML escaping for d attribute)
 // - Ensure fillColor is 8-hex #AARRGGBB
 // - Open generated XML in a new tab for inspection before download
+// - Validate XML before download and split multiple subpaths to improve compatibility
 
 document.getElementById('convertBtn').addEventListener('click', () => {
   const convertBtn = document.getElementById('convertBtn');
@@ -61,7 +62,7 @@ document.getElementById('convertBtn').addEventListener('click', () => {
     const img = document.getElementById('imagePreview');
     img.src = imgDataUrl;
 
-    const TRACE_TIMEOUT_MS = 30000; // 30s fallback
+    const TRACE_TIMEOUT_MS = 30000;
 
     img.onload = () => {
       console.log('Preview loaded. dataURL length =', img.src ? img.src.length : 0);
@@ -79,7 +80,6 @@ document.getElementById('convertBtn').addEventListener('click', () => {
       try {
         console.log('Memanggil ImageTracer.imageToSVG dengan data URL...');
 
-        // Get options from UI
         const maxShapesPerColorEl = document.getElementById('maxShapesPerColor');
         const maxTotalShapesEl = document.getElementById('maxTotalShapes');
         const numberofcolors = maxShapesPerColorEl ? Math.max(1, parseInt(maxShapesPerColorEl.value) || 2) : 2;
@@ -92,7 +92,6 @@ document.getElementById('convertBtn').addEventListener('click', () => {
           }
           clearTimeout(traceTimer);
 
-          console.log('ImageTracer callback dipanggil. svgString length =', svgString ? svgString.length : 0);
           if (!svgString || svgString.indexOf('<svg') === -1) {
             console.error('SVG kosong/tidak valid:', svgString);
             showMessage('Hasil tracing kosong atau tidak valid. Lihat console untuk detail.', 'error');
@@ -116,20 +115,16 @@ document.getElementById('convertBtn').addEventListener('click', () => {
               return;
             }
 
-            // Turn NodeList into array and optionally limit total shapes
             let pathsArr = Array.from(pathElements);
             if (maxTotalShapes > 0 && pathsArr.length > maxTotalShapes) {
               console.warn('Membatasi jumlah path dari', pathsArr.length, 'ke', maxTotalShapes);
               pathsArr = pathsArr.slice(0, maxTotalShapes);
             }
 
-            // Generate AM-compatible XML (do NOT escape path d)
-            const xmlContent = generateAlightMotionXML(pathsArr, 1080, 1080);
+            const xmlContent = generateAlightMotionXML(pathsArr, 1080, 1080, maxTotalShapes || 800);
 
-            // Open in new tab for inspection and then trigger download
             const blob = new Blob([xmlContent], { type: 'application/xml' });
             const url = URL.createObjectURL(blob);
-            // Open a new tab for user inspection (some browsers may block popups if not user-initiated)
             try { window.open(url, '_blank'); } catch (openErr) { console.warn('Could not open new tab for XML preview', openErr); }
 
             downloadXML('vector_shape_am.xml', xmlContent);
@@ -142,7 +137,7 @@ document.getElementById('convertBtn').addEventListener('click', () => {
             convertBtn.textContent = originalText;
             hideLoader();
           }
-        }, { lprs: 1, qtres: 1, numberofcolors: numberofcolors }); // pass numberofcolors from UI
+        }, { lprs: 1, qtres: 1, numberofcolors: numberofcolors });
       } catch (err) {
         clearTimeout(traceTimer);
         console.error('ImageTracer gagal dipanggil:', err);
@@ -172,8 +167,7 @@ document.getElementById('convertBtn').addEventListener('click', () => {
   reader.readAsDataURL(file);
 });
 
-// New: generate XML in Alight Motion export format
-function generateAlightMotionXML(pathElements, sceneWidth = 1080, sceneHeight = 1080) {
+function generateAlightMotionXML(pathElements, sceneWidth = 1080, sceneHeight = 1080, maxShapes = 800) {
   const title = 'Exported Vector';
   const exportW = sceneWidth;
   const exportH = sceneHeight;
@@ -182,47 +176,96 @@ function generateAlightMotionXML(pathElements, sceneWidth = 1080, sceneHeight = 
   const modifiedTime = Date.now();
   const amver = '1028425';
   const ffver = '106';
-  // Use a neutral background similar to sample; callers can tweak if needed
+  const amAttr = 'com.alightcreative.motion/5.0.273.1028425';
   const bgcolor = '#ffd8d8d8';
 
+  function escAttr(v) {
+    if (v === null || v === undefined) return '';
+    return String(v)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&apos;');
+  }
+
+  function isCanvasRect(d) {
+    if (!d) return false;
+    return /M\s*0\s*0[\s\S]*L\s*\d+\s*0[\s\S]*L\s*\d+\s*\d+[\s\S]*L\s*0\s*\d+/i.test(d);
+  }
+
+  function splitSubpaths(d) {
+    if (!d) return [];
+    d = String(d).replace(/\s+/g, ' ').trim();
+    d = d.replace(/"/g, "'");
+
+    // split at each new command starting with M, but keep each subpath whole
+    const parts = [];
+    const matches = d.match(/M[^M]+(?:[A-Za-z][^M]*)*/g) || [];
+    if (matches.length > 0) {
+      matches.forEach(m => {
+        const clean = m.trim();
+        if (clean) parts.push(clean);
+      });
+      return parts;
+    }
+    return [d];
+  }
+
   let shapeBlocks = '';
+  const cx = (sceneWidth / 2).toFixed(6);
+  const cy = (sceneHeight / 2).toFixed(6);
 
-  const centerX = (sceneWidth / 2).toFixed(6);
-  const centerY = (sceneHeight / 2).toFixed(6);
+  let shapeCount = 0;
+  const limit = Math.max(1, maxShapes);
 
-  pathElements.forEach((path, idx) => {
-    // raw path data (do NOT escape)
-    let d = path.getAttribute('d') || '';
-    // normalize whitespace
-    d = d.replace(/\s+/g, ' ').trim();
-
-    const fillRaw = path.getAttribute('fill') || path.style && path.style.fill;
+  for (let pi = 0; pi < pathElements.length && shapeCount < limit; pi++) {
+    const path = pathElements[pi];
+    const rawD = path.getAttribute('d') || '';
+    const fillRaw = path.getAttribute('fill') || (path.style && path.style.fill) || null;
     const fill = formatToAMColor(fillRaw);
 
-    // ensure d does not contain double quotes (AM xml will use double quotes)
-    const safeD = d.replace(/\"/g, "'");
+    const subpaths = splitSubpaths(rawD);
+    for (let si = 0; si < subpaths.length && shapeCount < limit; si++) {
+      const sub = subpaths[si];
+      if (!sub) continue;
+      if (isCanvasRect(sub)) continue;
 
-    const shapeId = 101 + idx; // start ids at 101 like the sample
-    const label = `Shape ${idx + 1}`;
+      const safeD = sub
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
 
-    shapeBlocks += `  <shape id="${shapeId}" label="${escapeXml(label)}" startTime="0" endTime="${totalTime}" fillType="color" mediaFillMode="fill">\n` +
-      `    <transform>\n      <location value="${centerX},${centerY},0.000000" />\n    </transform>\n` +
-      `    <fillColor value="${fill}" />\n` +
-      `    <path d="${safeD}" />\n` +
-      `  </shape>\n`;
-  });
+      const shapeId = 101 + shapeCount;
+      const label = `Shape ${shapeCount + 1}`;
 
-  // Build header using fields similar to the exported sample
+      shapeBlocks += `  <shape id="${shapeId}" label="${escAttr(label)}" startTime="0" endTime="${totalTime}" fillType="color" mediaFillMode="fill">\n` +
+        `    <transform>\n      <location value="${cx},${cy},0.000000" />\n    </transform>\n` +
+        `    <fillColor value="${escAttr(fill)}" />\n` +
+        `    <path d="${safeD}" />\n` +
+        `  </shape>\n`;
+
+      shapeCount++;
+    }
+  }
+
   const header = `<?xml version="1.0" encoding="UTF-8" ?><!--\nCreated by Image-to-vektor.xml\nExported: ${new Date().toLocaleString()}\n-->\n`;
-
-  const sceneOpen = `<scene title="${escapeXml(title)}" width="${sceneWidth}" height="${sceneHeight}" exportWidth="${exportW}" exportHeight="${exportH}" precompose="dynamicResolution" bgcolor="${bgcolor}" totalTime="${totalTime}" fps="${fps}" modifiedTime="${modifiedTime}" amver="${amver}" ffver="${ffver}" am="com.alightcreative.motion/5.0.273.1028425" amplatform="android" retime="freeze" retimeAdaptFPS="false">\n`;
-
+  const sceneOpen = `<scene title="${escAttr(title)}" width="${sceneWidth}" height="${sceneHeight}" exportWidth="${exportW}" exportHeight="${exportH}" precompose="dynamicResolution" bgcolor="${escAttr(bgcolor)}" totalTime="${totalTime}" fps="${fps}" modifiedTime="${modifiedTime}" amver="${escAttr(amver)}" ffver="${escAttr(ffver)}" am="${escAttr(amAttr)}" amplatform="android" retime="freeze" retimeAdaptFPS="false">\n`;
   const sceneClose = `</scene>`;
 
-  return header + sceneOpen + shapeBlocks + sceneClose;
+  const xml = header + sceneOpen + shapeBlocks + sceneClose;
+
+  // Validate XML before returning; if invalid, throw to stop broken export.
+  const parsed = new DOMParser().parseFromString(xml, 'application/xml');
+  const parserError = parsed.querySelector('parsererror');
+  if (parserError) {
+    console.error('Generated XML parser error:', parserError.textContent);
+    throw new Error('Generated XML is not well-formed: ' + parserError.textContent.trim().split('\n')[0]);
+  }
+
+  return xml;
 }
 
-// Helper: Escape XML atribut (still used for non-path values if needed)
 function escapeXml(str) {
   if (str === null || str === undefined) return '';
   return String(str)
@@ -233,14 +276,12 @@ function escapeXml(str) {
     .replace(/'/g, '&apos;');
 }
 
-// Format Warna ke ARGB (#AARRGGBB)
 function formatToAMColor(col) {
   if (!col) return '#ffffffff';
   col = String(col).trim();
   if (col === 'none') return '#00ffffff';
 
   if (col.startsWith('#')) {
-    // normalize #RRGGBB or #RGB
     if (col.length === 7) return ('#ff' + col.slice(1)).toLowerCase();
     if (col.length === 4) {
       const r = col[1] + col[1];
@@ -248,7 +289,6 @@ function formatToAMColor(col) {
       const b = col[3] + col[3];
       return ('#ff' + r + g + b).toLowerCase();
     }
-    // if already #AARRGGBB or #RRGGBBAA variations
     if (col.length === 9) return col.toLowerCase();
     if (col.length === 8) return ('#' + col.slice(1)).toLowerCase();
   }
